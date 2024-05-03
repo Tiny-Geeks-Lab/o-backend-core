@@ -4,6 +4,7 @@ import (
 	"bytes"
 	http2 "dc_haur/src/http"
 	"dc_haur/src/internal/model"
+	"dc_haur/src/internal/model/output"
 	"dc_haur/src/internal/service"
 	utils "dc_haur/src/pkg"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -36,6 +38,8 @@ const (
 	d3l1 = "em3 l1"
 	d3l2 = "l2"
 )
+
+const clientID = "integrationTestsClient"
 
 func TestApplication(t *testing.T) {
 
@@ -232,7 +236,7 @@ func TestApplication(t *testing.T) {
 			appUrl := config.GetConfig("TEST_URL")
 			println("Url to test " + appUrl)
 			apiV1 := "/api/v1"
-			apiV2 := "/api/v2"
+			apiV3 := "/api/v3"
 			apiIntegrationTest := apiV1 + "/integration-test"
 
 			t.Run("/test-image secured", func(t *testing.T) {
@@ -256,12 +260,18 @@ func TestApplication(t *testing.T) {
 				assert.Equal(t, 401, code)
 			})
 
-			t.Run("get decks", func(t *testing.T) {
+			t.Run("get decks by language", func(t *testing.T) {
 				defer failOnPanic(t)
 
-				result := getDecksFromApi(t, appUrl+apiV1)
+				resultRu := getDecksFromApi(t, appUrl+apiV3, "RU", "1")
+				resultEn := getDecksFromApi(t, appUrl+apiV3, "EN", "1")
 
-				assert.Equal(t, 3, len(result))
+				assert.Equal(t, 2, len(resultEn))
+				assert.Equal(t, 1, len(resultRu))
+
+				result := make([]output.DeckDTO, 3)
+				result = append(result, resultRu[0], resultEn[0], resultEn[1])
+
 				for i := range result {
 					assert.NotNil(t, result[i].ID)
 					assert.NotNil(t, result[i].LanguageCode)
@@ -269,6 +279,44 @@ func TestApplication(t *testing.T) {
 					assert.NotNil(t, result[i].Description)
 					assert.NotNil(t, result[i].Labels)
 					assert.NotNil(t, result[i].ImageID)
+					assert.NotNil(t, result[i].CardsCount)
+				}
+			})
+
+			t.Run("check decks cards count field", func(t *testing.T) {
+				defer failOnPanic(t)
+
+				result := getDecksFromApi(t, appUrl+apiV3, "EN", "1")
+				assert.NotEmpty(t, result)
+
+				expectedCounts := []int{8, 3, 3}
+				for i := range result {
+					assert.NotNil(t, result[i].CardsCount)
+					assert.Equal(t, expectedCounts[i], result[i].CardsCount)
+				}
+			})
+
+			t.Run("check decks opened cards count", func(t *testing.T) {
+				defer failOnPanic(t)
+
+				//deck 1
+				getQuestionFromApi(t, "4f84bde5-d6ad-4a2d-a2da-0553b4b281a2", "1", appUrl+apiV1)
+				getQuestionFromApi(t, "4f84bde5-d6ad-4a2d-a2da-0553b4b281a2", "1", appUrl+apiV1)
+				getQuestionFromApi(t, "dae6f634-8a6c-42a7-8d25-6a44e91e6e21", "1", appUrl+apiV1)
+
+				//deck 2 (only one card of this level, so should be 1 opened)
+				getQuestionFromApi(t, "de64eb23-9945-47fb-8da8-d8addac1dd47", "1", appUrl+apiV1)
+				getQuestionFromApi(t, "de64eb23-9945-47fb-8da8-d8addac1dd47", "1", appUrl+apiV1)
+
+				result := getDecksFromApi(t, appUrl+apiV3, "EN", "1")
+
+				expectedCounts := []int{3, 1, 0}
+
+				assert.NotEmpty(t, result)
+
+				for i := range result {
+					assert.NotNil(t, result[i].OpenedCount)
+					assert.Equal(t, expectedCounts[i], result[i].OpenedCount)
 				}
 			})
 
@@ -276,7 +324,7 @@ func TestApplication(t *testing.T) {
 				defer failOnPanic(t)
 
 				languageCode := "EN"
-				result := getLocalizedDecksFromApi(t, appUrl+apiV2, languageCode)
+				result := getDecksFromApi(t, appUrl+apiV3, languageCode, "1")
 
 				assert.Equal(t, 2, len(result))
 				for i := range result {
@@ -284,7 +332,7 @@ func TestApplication(t *testing.T) {
 				}
 
 				languageCode = "RU"
-				result = getLocalizedDecksFromApi(t, appUrl+apiV2, languageCode)
+				result = getDecksFromApi(t, appUrl+apiV3, languageCode, "1")
 
 				assert.Equal(t, 1, len(result))
 				for i := range result {
@@ -328,7 +376,7 @@ func TestApplication(t *testing.T) {
 					},
 				}
 
-				decks := getDecksFromApi(t, appUrl+apiV1)
+				decks := getDecksFromApi(t, appUrl+apiV3, "EN", "1")
 
 				for i, deck := range decks {
 					result := getLevelsFromApi(t, deck.ID, appUrl+apiV1)
@@ -346,7 +394,7 @@ func TestApplication(t *testing.T) {
 
 			t.Run("get question", func(t *testing.T) {
 				defer failOnPanic(t)
-				question := getQuestionFromApi(t, d1l1QuestionID, appUrl+apiV1)
+				question := getQuestionFromApi(t, d1l1QuestionID, clientID, appUrl+apiV1)
 				assert.Contains(t, []string{"question d1l1q1 text", "question d1l1q2 text", "question d1l1q3 text"}, question.Text)
 				assert.NotNil(t, question.ID)
 				assert.NotNil(t, question.Text)
@@ -354,29 +402,40 @@ func TestApplication(t *testing.T) {
 				assert.NotNil(t, question.AdditionalText)
 			})
 
-			t.Run("questions in level are ordered", func(t *testing.T) {
+			t.Run("questions in level are ordered (for many clients)", func(t *testing.T) {
 				defer failOnPanic(t)
 				clearHistory(t)
 				questions := []string{"question d1l1q1 text", "question d1l1q2 text", "question d1l1q3 text"}
-				for i := 0; i < 5; i++ {
-					question := getQuestionFromApi(t, d1l1QuestionID, appUrl+apiV1)
 
-					ansIndex1 := utils.FindIndex(questions, question.Text)
-					assert.NotEqual(t, -1, ansIndex1)
+				wg := sync.WaitGroup{}
 
-					question = getQuestionFromApi(t, d1l1QuestionID, appUrl+apiV1)
-					ansIndex2 := utils.FindIndex(questions, question.Text)
-					assert.NotEqual(t, -1, ansIndex2)
-					assert.NotEqual(t, ansIndex1, ansIndex2)
+				for clientNum := 1; clientNum <= 5; clientNum++ {
+					wg.Add(1)
+					clientNumStr := strconv.Itoa(clientNum)
+					go func() {
+						defer wg.Done()
+						for i := 0; i < 5; i++ {
+							question := getQuestionFromApi(t, d1l1QuestionID, clientID+clientNumStr, appUrl+apiV1)
 
-					question = getQuestionFromApi(t, d1l1QuestionID, appUrl+apiV1)
-					ansIndex3 := utils.FindIndex(questions, question.Text)
-					assert.NotEqual(t, -1, ansIndex3)
-					assert.NotEqual(t, ansIndex1, ansIndex3)
-					assert.NotEqual(t, ansIndex2, ansIndex3)
-					println("ORDER CHECK FINISHED")
-					time.Sleep(100 * time.Millisecond)
+							ansIndex1 := utils.FindIndex(questions, question.Text)
+							assert.NotEqual(t, -1, ansIndex1)
+
+							question = getQuestionFromApi(t, d1l1QuestionID, clientID+clientNumStr, appUrl+apiV1)
+							ansIndex2 := utils.FindIndex(questions, question.Text)
+							assert.NotEqual(t, -1, ansIndex2)
+							assert.NotEqual(t, ansIndex1, ansIndex2)
+
+							question = getQuestionFromApi(t, d1l1QuestionID, clientID+clientNumStr, appUrl+apiV1)
+							ansIndex3 := utils.FindIndex(questions, question.Text)
+							assert.NotEqual(t, -1, ansIndex3)
+							assert.NotEqual(t, ansIndex1, ansIndex3)
+							assert.NotEqual(t, ansIndex2, ansIndex3)
+							println("ORDER CHECK FINISHED")
+							time.Sleep(100 * time.Millisecond)
+						}
+					}()
 				}
+				wg.Wait()
 			})
 			t.Run("Get all questions by deck", func(t *testing.T) {
 				defer failOnPanic(t)
@@ -441,14 +500,14 @@ func getAllQuestionsFromDeck(t *testing.T, deckID string, url string) []model.Qu
 	return result
 }
 
-func getQuestionFromApi(t *testing.T, levelID string, url string) *model.Question {
+func getQuestionFromApi(t *testing.T, levelID string, clientID string, url string) *model.Question {
 	fmt.Println("Getting question from level " + levelID)
 	request, err := http.NewRequest("GET", url+"/question", nil)
 	assert.NoError(t, err)
 
 	query := request.URL.Query()
 	query.Add("levelId", levelID)
-	query.Add("clientId", "integrationTestsClient")
+	query.Add("clientId", clientID)
 	request.URL.RawQuery = query.Encode()
 	client := http.Client{}
 	response, err := client.Do(request)
@@ -460,6 +519,7 @@ func getQuestionFromApi(t *testing.T, levelID string, url string) *model.Questio
 	err = json.NewDecoder(response.Body).Decode(&result)
 	assert.NoError(t, err)
 	err = response.Body.Close()
+	println("Got question " + result.Text + " for client " + clientID)
 	return &result
 }
 
@@ -484,9 +544,9 @@ func getLevelsFromApi(t *testing.T, deckID string, url string) []model.Level {
 	return result
 }
 
-func getDecksFromApi(t *testing.T, url string) []model.Deck {
+/*func getDecksFromApi(t *testing.T, url string, lang string) []output.DeckDTO {
 	fmt.Println("Getting decks...")
-	request, err := http.NewRequest("GET", url+"/decks", nil)
+	request, err := http.NewRequest("GET", url+"/decks?languageCode="+lang, nil)
 	assert.NoError(t, err)
 
 	client := http.Client{}
@@ -495,17 +555,17 @@ func getDecksFromApi(t *testing.T, url string) []model.Deck {
 
 	assert.Equal(t, http.StatusOK, response.StatusCode)
 
-	var result []model.Deck
+	var result []output.DeckDTO
 	err = json.NewDecoder(response.Body).Decode(&result)
 	assert.NoError(t, err)
 	err = response.Body.Close()
 
 	return result
-}
+}*/
 
-func getLocalizedDecksFromApi(t *testing.T, url string, languageCode string) []model.Deck {
+func getDecksFromApi(t *testing.T, url string, languageCode string, clientId string) []output.DeckDTO {
 	fmt.Println("Getting localized decks...")
-	request, err := http.NewRequest("GET", url+"/decks?languageCode="+languageCode, nil)
+	request, err := http.NewRequest("GET", url+"/decks?languageCode="+languageCode+"&clientId="+clientId, nil)
 	assert.NoError(t, err)
 
 	client := http.Client{}
@@ -514,7 +574,7 @@ func getLocalizedDecksFromApi(t *testing.T, url string, languageCode string) []m
 
 	assert.Equal(t, http.StatusOK, response.StatusCode)
 
-	var result []model.Deck
+	var result []output.DeckDTO
 	err = json.NewDecoder(response.Body).Decode(&result)
 	assert.NoError(t, err)
 	err = response.Body.Close()
@@ -538,7 +598,7 @@ func getResponseCode(method, url string) (int, error) {
 	return response.StatusCode, nil
 }
 
-func checkDeckFields(t *testing.T, deck model.Deck) {
+func checkDeckFields(t *testing.T, deck output.DeckDTO) {
 	assert.NotNil(t, deck.ID)
 	assert.NotNil(t, deck.LanguageCode)
 	assert.NotNil(t, deck.Name)

@@ -3,6 +3,7 @@ package http
 import (
 	_ "dc_haur/docs"
 	"dc_haur/src/internal/model"
+	"dc_haur/src/internal/model/output"
 	"dc_haur/src/internal/repo"
 	"dc_haur/src/internal/service"
 	"dc_haur/src/pkg"
@@ -73,6 +74,9 @@ func StartServer(services *service.Services) {
 		if err := services.Repos.History.Truncate(); err != nil {
 			return err
 		}
+		if err := services.Repos.UsedQuestions.Truncate(); err != nil {
+			return err
+		}
 		c.Status(http.StatusOK)
 		return nil
 	}))
@@ -85,14 +89,21 @@ func StartServer(services *service.Services) {
 	}))
 
 	apiV1 := router.Group("/api/v1")
+	apiV2 := router.Group("/api/v2")
+	apiV3 := router.Group("/api/v3")
 
 	apiV1.Use(func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+	})
+	apiV2.Use(func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+	})
+	apiV3.Use(func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
 	})
 
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
-	apiV1.GET("/decks", doWithErr(controller.GetDecks))
 	apiV1.GET("/levels", doWithErr(controller.GetLevels))
 	apiV1.GET("/question", doWithErr(controller.GetQuestion))
 	apiV1.POST("/question/:questionId/like", doWithErr(controller.LikeQuestion))
@@ -104,13 +115,9 @@ func StartServer(services *service.Services) {
 
 	apiV1.GET("/user/:userId/likes", doWithErr(controller.GetUserLikes))
 
-	apiV2 := router.Group("/api/v2")
-
-	apiV2.Use(func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-	})
-
 	apiV2.GET("/decks", doWithErr(controller.GetLocalizedDecks))
+
+	apiV3.GET("/decks", doWithErr(controller.GetLocalizedDecksWithCounts))
 
 	port := config.GetConfigOr("CONTAINER_PORT", "80")
 	log.Println("Starting server on port " + port)
@@ -120,26 +127,13 @@ func StartServer(services *service.Services) {
 	}
 }
 
-// GetDecks godoc
-// @Summary      Get all available decks
-// @Produce      json
-// @Success      200  {array} model.Deck
-// @Router       /v1/decks [get]
-func (c Controller) GetDecks(ctx *gin.Context) error {
-	decks, err := c.services.Decks.GetDecks()
-	if err != nil {
-		return err
-	}
-	ctx.JSON(http.StatusOK, decks)
-	return nil
-}
-
 // GetLocalizedDecks godoc
 // @Summary      Get decks by lang code
 // @Param 		 languageCode query string true "Language code in upper case (RU, EN)"
 // @Produce      json
-// @Success      200  {array} model.Deck
+// @Success      200  {array} output.DeckDTO
 // @Router       /v2/decks [get]
+// TODO deprecated
 func (c Controller) GetLocalizedDecks(ctx *gin.Context) error {
 	langCode := ctx.Query("languageCode")
 	if langCode == "" {
@@ -148,8 +142,43 @@ func (c Controller) GetLocalizedDecks(ctx *gin.Context) error {
 		return nil
 	}
 
-	decks, err := c.services.Decks.GetDecksByLanguage(langCode)
+	decksService := c.services.Decks
+	models, err := decksService.GetDecksByLanguage(langCode)
+	if err != nil {
+		return err
+	}
+	decks, err := decksService.EnrichDecksWithCardsCounts(decksService.ToDtos(models))
+	if err != nil {
+		return err
+	}
+	ctx.JSON(http.StatusOK, decks)
+	return nil
+}
 
+// GetLocalizedDecksWithCounts godoc
+// @Summary      Get decks by lang code
+// @Param 		 languageCode query string true "Language code in upper case (RU, EN)"
+// @Param 		 clientId query string true "User ID"
+// @Produce      json
+// @Success      200  {array} output.DeckDTO
+// @Router       /v3/decks [get]
+func (c Controller) GetLocalizedDecksWithCounts(ctx *gin.Context) error {
+	langCode := ctx.Query("languageCode")
+	if langCode == "" {
+		ctx.String(400, "Language not specified. "+
+			"Please specify languageCode query parameter as in the following: languageCode=EN")
+		return nil
+	}
+	clientId, _ := ctx.GetQuery("clientId")
+	if clientId == "" {
+		return errors.New("you must specify clientId")
+	}
+	decksService := c.services.Decks
+	models, err := decksService.GetDecksByLanguage(langCode)
+	if err != nil {
+		return err
+	}
+	decks, err := decksService.EnrichDecksWithCounts(models, clientId)
 	if err != nil {
 		return err
 	}
@@ -185,19 +214,19 @@ func (c Controller) GetLevels(ctx *gin.Context) error {
 // @Router       /v1/question [get]
 func (c Controller) GetQuestion(ctx *gin.Context) error {
 	levelID := ctx.Query("levelId")
-	question, err := c.services.Questions.GetRandQuestion(levelID)
+	clientId, _ := ctx.GetQuery("clientId")
+	if clientId == "" {
+		return errors.New("you must specify clientId")
+	}
+	question, isLast, err := c.services.Questions.GetRandQuestion(levelID, clientId)
 	if err != nil {
 		return err
 	}
-
-	if clientId, exists := ctx.GetQuery("clientId"); exists {
-		err := c.services.Repos.History.Insert(clientId, question)
-		if err != nil {
-			return err
-		}
+	dto := output.QuestionDTO{
+		Question: *question,
+		IsLast:   isLast,
 	}
-
-	ctx.JSON(http.StatusOK, question)
+	ctx.JSON(http.StatusOK, dto)
 	return nil
 }
 

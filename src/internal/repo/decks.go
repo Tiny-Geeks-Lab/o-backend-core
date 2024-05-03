@@ -44,3 +44,20 @@ func (r *Decks) GetDeckByNameWithEmoji(name string) (*model.Deck, error) {
 	}
 	return &deck, nil
 }
+
+func (r *Decks) GetQuestionsCount(ID string) (int, error) {
+	var res int
+	err := r.db.Raw("SELECT count(*) FROM questions where level_id in (select id from levels where deck_id = ?)", ID).
+		Row().Scan(&res)
+	if err != nil {
+		return 0, err
+	}
+	return res, nil
+}
+
+func (r *Decks) GetOpenedQuestionsCount(ID string, clientID string) (int, error) {
+	var opened int
+	err := r.db.Raw("SELECT count(distinct question_id) FROM questions_history where client_id = ? AND level_id in (select id from levels where deck_id = ?)",
+		clientID, ID).Row().Scan(&opened)
+	return opened, err
+}
