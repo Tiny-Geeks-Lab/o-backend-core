@@ -180,6 +180,43 @@ const docTemplate = `{
                 }
             }
         },
+        "/v1/level/{id}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Get level by ID.",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "id клиента. Обязателен если в features есть OPENED_COUNT",
+                        "name": "clientId",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Список модификаций ответа через запятую. Доступны - OPENED_COUNT",
+                        "name": "features",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "id of level",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/output.LevelDto"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/levels": {
             "get": {
                 "produces": [
@@ -360,7 +397,7 @@ const docTemplate = `{
                         "type": "string",
                         "description": "The ID of the user.",
                         "name": "userId",
-                        "in": "query",
+                        "in": "path",
                         "required": true
                     }
                 ],
@@ -386,6 +423,41 @@ const docTemplate = `{
                         "type": "string",
                         "description": "Language code in upper case (RU, EN)",
                         "name": "languageCode",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/output.DeckDTO"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v3/decks": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Get decks by lang code",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Language code in upper case (RU, EN)",
+                        "name": "languageCode",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "clientId",
                         "in": "query",
                         "required": true
                     }
@@ -477,6 +549,52 @@ const docTemplate = `{
                 },
                 "name": {
                     "type": "string"
+                },
+                "openedCount": {
+                    "type": "integer"
+                }
+            }
+        },
+        "output.LevelDto": {
+            "type": "object",
+            "properties": {
+                "colorButton": {
+                    "type": "string"
+                },
+                "colorEnd": {
+                    "type": "string"
+                },
+                "colorStart": {
+                    "type": "string"
+                },
+                "counts": {
+                    "$ref": "#/definitions/output.QuestionsCounts"
+                },
+                "deckID": {
+                    "type": "string"
+                },
+                "emoji": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "levelOrder": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "output.QuestionsCounts": {
+            "type": "object",
+            "properties": {
+                "openedQuestionsCount": {
+                    "type": "integer"
+                },
+                "questionsCount": {
+                    "type": "integer"
                 }
             }
         }
